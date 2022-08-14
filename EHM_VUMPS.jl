@@ -1,6 +1,6 @@
 # 06/09/2022 
-# Add unitary operations S(θ) = U(θ)⁺SᶻU(θ) before generating samples [DONE] 
-# Add performance evaluation tool @time; At large bond dimension, use imaginary-time evolution using tdvp
+# Add unitary operations S(θ) = U(θ)⁺SᶻU(θ) each time before generating samples.
+# Perform imaginary-time evolution using tdvp. [Need to be fixed]
 
 using Core: stderr
 using LinearAlgebra
@@ -25,11 +25,11 @@ model_params = (t=1.0, U=6.0, V=)
 ########################################################################################################
 # CODE BELOW HERE DOES NOT NEED TO BE MODIFIED
 
-N = 2                # Unit cell size
-sites_number = 32    # Number of sites truncated from infinite MPS
+N = 2                     # Unit cell size
+sites_number = 32         # Number of sites sampled from the infinite MPS
 correlation_length = 1e-8
 entropy0 = 0; entropy1 = 0
-time_step = -10.0
+# time_step = -0.5
 output_file = h5open("../Data/EH_U$(model_params[2])V$(model_params[3]).h5", "w") 
 
 ########################################################################################################
@@ -82,22 +82,38 @@ flush(stdout); flush(stderr)
 bonds = [200, 200, 200, 200, 800, 1500, 2500]
 vumps_iters = [50, 100, 100, 200, 200, 250, 250]
 thresholds = [1e-7, 1e-7, 1e-8, 1e-8, 1e-8, 1e-8, 1e-8]
+eigsolve_thresholds = [1000, 1000, 1000, 1000, 1000, 1000, 2000]
 
+# Using subspace expansion and tdvp jointly.
+# @time for iteration_index in 1:outer_iters
+#   println("\nIncrease bond dimension #$iteration_index")
+#   global maxdim = bonds[iteration_index]
+#   global max_vumps_iters = vumps_iters[iteration_index]
+#   global subspace_expansion_kwargs = (cutoff=cutoff, maxdim=maxdim)
+#   global vumps_kwargs = (tol=thresholds[iteration_index], maxiter=max_vumps_iters, eigsolve_tol = (x -> x / 1000), outputlevel=outputlevel)
+
+#   @time global ψ = subspace_expansion(ψ, H; subspace_expansion_kwargs...)
+#   println("\nRun VUMPS with new bond dimension")
+#   if iteration_index < outer_iters
+#     @time global ψ = vumps(H, ψ; vumps_kwargs...)
+#   else
+#     global vumps_kwargs = (tol=thresholds[iteration_index], maxiter=max_vumps_iters, outputlevel=outputlevel)
+#     @time global ψ = tdvp(H, ψ; time_step=time_step, vumps_kwargs...)
+#   end
+#   flush(stdout); flush(stderr)
+# end
+
+# Using subspace expansion only.
 @time for iteration_index in 1:outer_iters
   println("\nIncrease bond dimension #$iteration_index")
   global maxdim = bonds[iteration_index]
   global max_vumps_iters = vumps_iters[iteration_index]
   global subspace_expansion_kwargs = (cutoff=cutoff, maxdim=maxdim)
-  global vumps_kwargs = (tol=thresholds[iteration_index], maxiter=max_vumps_iters, eigsolve_tol = (x -> x / 1000), outputlevel=outputlevel)
+  global vumps_kwargs = (tol=thresholds[iteration_index], maxiter=max_vumps_iters, eigsolve_tol = (x -> x / eigsolve_thresholds[iteration_index]), outputlevel=outputlevel)
 
   @time global ψ = subspace_expansion(ψ, H; subspace_expansion_kwargs...)
   println("\nRun VUMPS with new bond dimension")
-  if iteration_index < outer_iters
-    @time global ψ = vumps(H, ψ; vumps_kwargs...)
-  else
-    global vumps_kwargs = (tol=thresholds[iteration_index], maxiter=max_vumps_iters, outputlevel=outputlevel)
-    @time global ψ = tdvp(H, ψ; time_step=time_step, vumps_kwargs...)
-  end
+  @time global ψ = vumps(H, ψ; vumps_kwargs...)
   flush(stdout); flush(stderr)
 end
 
@@ -106,20 +122,19 @@ println("\nCheck translational invariance of optimized infinite MPS")
 @show norm(contract(ψ.AL[1:N]..., ψ.C[N]) - contract(ψ.C[0], ψ.AR[1:N]...))
 
 
+# Compute local observable e.g. Sz and n
 function ITensors.expect(ψ::InfiniteCanonicalMPS, o, n)
   return (noprime(ψ.AL[n] * ψ.C[n] * op(o, s[n])) * dag(ψ.AL[n] * ψ.C[n]))[]
 end
 
 
+# Compute observables involve two sites e.g. energy per bond
 function expect_two_site(ψ::InfiniteCanonicalMPS, h::ITensor, n1n2)
   n1, n2 = n1n2
   ϕ = ψ.AL[n1] * ψ.AL[n2] * ψ.C[n2]
   return (noprime(ϕ * h) * dag(ϕ))[]
 end
 
-
-# Add this function to measure energy per bond
-# Based on the update from 2-local Hamiltonian to non-local Hamiltonian 
 function expect_two_site(ψ::InfiniteCanonicalMPS, h::MPO, n1n2)
   return expect_two_site(ψ, prod(h), n1n2)
 end
